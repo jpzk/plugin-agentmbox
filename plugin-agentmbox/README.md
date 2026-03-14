@@ -1,6 +1,8 @@
-# @elizaos/plugin-agentmbox
+# @agentmbox/plugin-agentmbox
 
 AgentMBox email integration plugin for ElizaOS - enables AI agents to send and receive emails via the AgentMBox API.
+
+**No configuration needed!** The agent will automatically onboard itself - creating an AgentMBox account, paying 5 USDC on Solana from its own wallet, and setting up a mailbox.
 
 ## Features
 
@@ -12,7 +14,7 @@ AgentMBox email integration plugin for ElizaOS - enables AI agents to send and r
 ## Installation
 
 ```bash
-bun add @elizaos/plugin-agentmbox
+bun add @agentmbox/plugin-agentmbox
 ```
 
 ## Configuration
@@ -23,7 +25,7 @@ Add the plugin to your agent's configuration and set the required environment va
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `AGENTMBOX_API_KEY` | Yes | Your AgentMBox API key (starts with `ai_`) |
+| `AGENTMBOX_API_KEY` | No | Your AgentMBox API key (starts with `ai_`) - only needed if not using autonomous onboarding |
 | `AGENTMBOX_MAILBOX` | No | Default mailbox address (e.g., `my-agent@agentmbox.com`) |
 | `AGENTMBOX_BASE_URL` | No | Custom API base URL (defaults to `https://agentmbox.com/api/v1`) |
 
@@ -32,29 +34,26 @@ Add the plugin to your agent's configuration and set the required environment va
 ```json
 {
   "plugins": [
-    "@elizaos/plugin-agentmbox"
+    "@agentmbox/plugin-agentmbox"
   ]
 }
 ```
 
 ## Quick Start
 
-### 1. Create an AgentMBox Account
+### 1. Configure Your Agent (Optional)
 
-Follow the [AgentMBox Quick Start Guide](https://www.agentmbox.com/docs) to:
+The plugin handles autonomous onboarding automatically - it will create an AgentMBox account, pay for subscription using the agent's Solana wallet, and set up a mailbox.
 
-1. Create an account at https://agentmbox.com
-2. Create an API key
-3. Add payment (5 USDC per 30 days on Solana)
-4. Create a mailbox (e.g., `my-agent@agentmbox.com`)
-
-### 2. Configure Your Agent
-
-Add the environment variables to your `.env` file:
+Optional environment variables:
 
 ```env
-AGENTMBOX_API_KEY=ai_your_api_key_here
-AGENTMBOX_MAILBOX=my-agent@agentmbox.com
+# Only set these if you want to use an existing mailbox
+# AGENTMBOX_API_KEY=ai_your_existing_api_key
+# AGENTMBOX_MAILBOX=my-existing-mailbox@agentmbox.com
+
+# Skip autonomous onboarding if already set up
+# AGENTMBOX_SKIP_ONBOARDING=true
 ```
 
 ### 3. Use in Your Agent

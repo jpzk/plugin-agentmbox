@@ -41,13 +41,14 @@ export class AgentMBoxService extends Service {
     const mailbox = String(runtime.getSetting("AGENTMBOX_MAILBOX") || "");
     const baseUrl = String(runtime.getSetting("AGENTMBOX_BASE_URL") || "");
 
-    if (!apiKey) {
-      throw new Error(
-        "AGENTMBOX_API_KEY is required. Get your API key from https://agentmbox.com"
-      );
+    // API key will be set by onboarding if not provided
+    // The service will work once onboarding completes
+    if (apiKey && !apiKey.startsWith("ai_")) {
+      logger.warn("AgentMBox API key should start with 'ai_'");
     }
 
-    const agentName = runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
+    const agentName =
+      runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
     const defaultMailbox = mailbox || `${agentName}@agentmbox.com`;
 
     this.apiKey = apiKey;
@@ -66,7 +67,16 @@ export class AgentMBoxService extends Service {
     logger.info("AgentMBox service stopped");
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {},
+  ): Promise<T> {
+    if (!this.apiKey) {
+      throw new Error(
+        "AgentMBox API key not configured. Ensure onboarding has completed or set AGENTMBOX_API_KEY.",
+      );
+    }
+
     const url = `${this.baseUrl}${endpoint}`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
@@ -79,7 +89,9 @@ export class AgentMBoxService extends Service {
 
     if (!response.ok) {
       if (isAgentMBoxError(data)) {
-        throw new Error(`AgentMBox API error (${response.status}): ${data.error}`);
+        throw new Error(
+          `AgentMBox API error (${response.status}): ${data.error}`,
+        );
       }
       throw new Error(`AgentMBox API error: ${response.status}`);
     }
@@ -96,7 +108,9 @@ export class AgentMBoxService extends Service {
 
   async listEmails(limit = 50, offset = 0): Promise<EmailListResponse> {
     const mailboxParam = this.getMailboxParam();
-    return this.request<EmailListResponse>("/mail" + mailboxParam + "&limit=" + limit + "&offset=" + offset);
+    return this.request<EmailListResponse>(
+      "/mail" + mailboxParam + "&limit=" + limit + "&offset=" + offset,
+    );
   }
 
   async getEmail(emailId: string): Promise<EmailDetailResponse> {
@@ -118,16 +132,21 @@ export class AgentMBoxService extends Service {
 
   async deleteEmail(emailId: string): Promise<{ success: boolean }> {
     const mailboxParam = this.getMailboxParam();
-    return this.request<{ success: boolean }>("/mail/" + emailId + mailboxParam, {
-      method: "DELETE",
-    });
+    return this.request<{ success: boolean }>(
+      "/mail/" + emailId + mailboxParam,
+      {
+        method: "DELETE",
+      },
+    );
   }
 
   async listMailboxes(): Promise<MailboxListResponse> {
     return this.request<MailboxListResponse>("/mailboxes");
   }
 
-  async createMailbox(request: CreateMailboxRequest): Promise<CreateMailboxResponse> {
+  async createMailbox(
+    request: CreateMailboxRequest,
+  ): Promise<CreateMailboxResponse> {
     return this.request<CreateMailboxResponse>("/mailboxes", {
       method: "POST",
       body: JSON.stringify(request),
@@ -162,9 +181,12 @@ export class AgentMBoxService extends Service {
   }
 
   async verifyDomain(domainId: string): Promise<DomainVerifyResponse> {
-    return this.request<DomainVerifyResponse>("/domains/" + domainId + "/verify", {
-      method: "POST",
-    });
+    return this.request<DomainVerifyResponse>(
+      "/domains/" + domainId + "/verify",
+      {
+        method: "POST",
+      },
+    );
   }
 
   async deleteDomain(domainId: string): Promise<{ success: boolean }> {

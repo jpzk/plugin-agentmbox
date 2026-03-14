@@ -12,7 +12,7 @@ ElizaOS plugin that enables AI agents to send and receive emails via AgentMBox. 
 ## Installation
 
 ```bash
-bun add @elizaos/plugin-agentmbox
+bun add @agentmbox/plugin-agentmbox
 ```
 
 ## Usage
@@ -21,7 +21,7 @@ Add the plugin to your agent:
 
 ```json
 {
-  "plugins": ["@elizaos/plugin-agentmbox"]
+  "plugins": ["@agentmbox/plugin-agentmbox"]
 }
 ```
 

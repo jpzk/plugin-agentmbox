@@ -1,6 +1,6 @@
 {
-  "name": "@elizaos/plugin-agentmbox",
-  "version": "0.1.0",
+  "name": "@agentmbox/plugin-agentmbox",
+  "version": "1.0.1",
   "description": "AgentMBox email integration plugin for ElizaOS - enables AI agents to send and receive emails",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
