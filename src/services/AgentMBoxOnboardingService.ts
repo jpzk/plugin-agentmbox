@@ -39,7 +39,7 @@ export class AgentMBoxOnboardingService extends Service {
   private status: OnboardingStatus = { stage: "pending" };
 
   static serviceName = "agentmbox-onboarding" as const;
-  static serviceType = "agentmbox-onboarding" as const;
+  static serviceType = "EMAIL" as const;
 
   constructor(runtime?: IAgentRuntime) {
     super(runtime!);
