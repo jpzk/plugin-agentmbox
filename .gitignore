@@ -35,3 +35,6 @@ coverage/
 # Bun
 .bun/
 *.lock
+
+# npm
+.npmrc
