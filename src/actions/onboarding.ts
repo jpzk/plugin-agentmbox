@@ -111,18 +111,23 @@ export const onboardingAction: Action = {
 
     try {
       // Step 1: Create account
+      // The email field is the account owner's email for notifications (not the agent mailbox)
+      // Per https://www.agentmbox.com/llm.txt - it is not verified, ask owner for their email
+      // If owner doesn't care, generate any placeholder like agent-RANDOM@example.com
       const agentName =
         runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
-      const ownerEmail =
-        String(runtime.getSetting("AGENTMBOX_OWNER_EMAIL")) ||
-        `agent-${agentName}@owner.local`;
+      const randomNum = Math.floor(Math.random() * 10000000);
+      const ownerEmail = `agent-${agentName}-${randomNum}@example.com`;
       const password = generatePassword(32);
 
       logger.info("AgentMBox: Creating account...");
       const signupResponse = await fetch(`${BASE_URL}/auth/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: ownerEmail, password }),
+        body: JSON.stringify({
+          email: ownerEmail,
+          password,
+        }),
       });
 
       if (!signupResponse.ok) {
@@ -134,13 +139,21 @@ export const onboardingAction: Action = {
       status = { stage: "account_created" };
       logger.info("AgentMBox: Account created");
 
+      // Get session cookie from signup response for API key creation
+      // Per https://www.agentmbox.com/llm.txt - "A session cookie is set automatically"
+      const setCookieHeader = signupResponse.headers.get("set-cookie") || "";
+      const sessionCookie = setCookieHeader.split(";")[0];
+
       // Step 2: Create API key
+      // Use session cookie from signup, not API key (API key doesn't exist yet)
       logger.info("AgentMBox: Creating API key...");
       const keyResponse = await fetch(`${BASE_URL}/keys`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessionCookie,
+        },
         body: JSON.stringify({ name: `${agentName}-key` }),
-        credentials: "include",
       });
 
       if (!keyResponse.ok) {
@@ -151,7 +164,7 @@ export const onboardingAction: Action = {
       const keyData = await keyResponse.json();
       apiKey = keyData.key;
       status = { stage: "api_key_created" };
-      logger.info("AgentMBox: API key created");
+      logger.info("AgentMBox: API key created:", keyData.keyPrefix);
 
       // Step 3: Get payment address
       logger.info("AgentMBox: Getting payment address...");
