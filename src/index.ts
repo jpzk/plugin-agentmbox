@@ -10,13 +10,18 @@ import { AgentMBoxService } from "./services/AgentMBoxService";
 import { AgentMBoxOnboardingService } from "./services/AgentMBoxOnboardingService";
 import { sendEmailAction } from "./actions/sendEmail";
 import { getEmailsAction } from "./actions/getEmails";
+import { onboardingAction } from "./actions/onboarding";
 import { emailProvider } from "./providers/emailProvider";
 
 export const agentMBoxPlugin: Plugin = {
   name: "agentmbox",
   description:
     "AgentMBox email integration plugin for ElizaOS - enables AI agents to send/receive emails with autonomous onboarding",
-  actions: [sendEmailAction, getEmailsAction],
+  priority: 0,
+  config: {
+    baseUrl: "https://agentmbox.com/api/v1",
+  },
+  actions: [sendEmailAction, getEmailsAction, onboardingAction],
   providers: [emailProvider],
   services: [AgentMBoxService, AgentMBoxOnboardingService],
   init: async (config: Record<string, string>, runtime: IAgentRuntime) => {
