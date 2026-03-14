@@ -45,6 +45,13 @@ export class AgentMBoxOnboardingService extends Service {
     super(runtime!);
   }
 
+  static async start(
+    runtime: IAgentRuntime,
+  ): Promise<AgentMBoxOnboardingService> {
+    const service = new AgentMBoxOnboardingService(runtime);
+    return service;
+  }
+
   get serviceName(): string {
     return AgentMBoxOnboardingService.serviceName;
   }

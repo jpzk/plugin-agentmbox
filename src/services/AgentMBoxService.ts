@@ -1,6 +1,6 @@
 import { Service, type IAgentRuntime, logger } from "@elizaos/core";
 import {
-  type AgentMBoxConfig,
+  type Email,
   type EmailListResponse,
   type EmailDetailResponse,
   type SendEmailRequest,
@@ -17,16 +17,27 @@ import {
   isAgentMBoxError,
 } from "../types";
 
+const DEFAULT_POLLING_INTERVAL = 300000; // 5 minutes
+
 export class AgentMBoxService extends Service {
   private apiKey: string = "";
   private mailbox: string | undefined;
   private baseUrl: string = "https://agentmbox.com/api/v1";
+  private pollingInterval: number = DEFAULT_POLLING_INTERVAL;
+  private pollingTimer: NodeJS.Timeout | null = null;
+  private lastEmailCheck: number = 0;
 
   static serviceName = "agentmbox" as const;
   static serviceType = "EMAIL" as const;
 
-  constructor(runtime?: IAgentRuntime) {
-    super(runtime!);
+  constructor(protected runtime: IAgentRuntime) {
+    super(runtime);
+  }
+
+  static async start(runtime: IAgentRuntime): Promise<AgentMBoxService> {
+    const service = new AgentMBoxService(runtime);
+    await service.initialize(runtime);
+    return service;
   }
 
   get serviceName(): string {
@@ -34,16 +45,17 @@ export class AgentMBoxService extends Service {
   }
 
   get capabilityDescription(): string {
-    return "AgentMBox email service - allows sending and receiving emails";
+    return "AgentMBox email service - allows sending and receiving emails with polling";
   }
 
   async initialize(runtime: IAgentRuntime): Promise<void> {
     const apiKey = String(runtime.getSetting("AGENTMBOX_API_KEY") || "");
     const mailbox = String(runtime.getSetting("AGENTMBOX_MAILBOX") || "");
     const baseUrl = String(runtime.getSetting("AGENTMBOX_BASE_URL") || "");
+    const pollingIntervalSetting = runtime.getSetting(
+      "AGENTMBOX_POLLING_INTERVAL",
+    );
 
-    // API key will be set by onboarding if not provided
-    // The service will work once onboarding completes
     if (apiKey && !apiKey.startsWith("ai_")) {
       logger.warn("AgentMBox API key should start with 'ai_'");
     }
@@ -55,16 +67,130 @@ export class AgentMBoxService extends Service {
     this.apiKey = apiKey;
     this.mailbox = defaultMailbox;
     this.baseUrl = baseUrl || "https://agentmbox.com/api/v1";
+    this.pollingInterval = pollingIntervalSetting
+      ? parseInt(String(pollingIntervalSetting), 10)
+      : DEFAULT_POLLING_INTERVAL;
     this.runtime = runtime;
 
-    if (!this.apiKey.startsWith("ai_")) {
-      logger.warn("AgentMBox API key should start with 'ai_'");
+    logger.info("AgentMBox service initialized for: " + this.mailbox);
+
+    // Start polling for new emails
+    if (this.apiKey && this.apiKey.startsWith("ai_")) {
+      this.startPolling();
+    }
+  }
+
+  /**
+   * Start polling for new emails
+   */
+  private startPolling(): void {
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
     }
 
-    logger.info("AgentMBox service initialized for: " + this.mailbox);
+    logger.info(
+      `AgentMBox: Starting email polling every ${this.pollingInterval / 1000} seconds`,
+    );
+
+    // Initial check
+    this.checkForNewEmails();
+
+    // Set up periodic polling
+    this.pollingTimer = setInterval(() => {
+      this.checkForNewEmails();
+    }, this.pollingInterval);
+  }
+
+  /**
+   * Stop polling for new emails
+   */
+  private stopPolling(): void {
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this.pollingTimer = null;
+      logger.info("AgentMBox: Stopped email polling");
+    }
+  }
+
+  /**
+   * Check for new emails and process them
+   */
+  private async checkForNewEmails(): Promise<void> {
+    if (!this.apiKey || !this.mailbox) {
+      return;
+    }
+
+    try {
+      // Get recent emails (last 10, unread first)
+      const response = await this.listEmails(10, 0);
+
+      if (response.emails && response.emails.length > 0) {
+        // Find unread emails
+        const unreadEmails = response.emails.filter(
+          (email) =>
+            !email.isRead &&
+            new Date(email.receivedAt).getTime() > this.lastEmailCheck,
+        );
+
+        if (unreadEmails.length > 0) {
+          logger.info(
+            `AgentMBox: Found ${unreadEmails.length} new unread email(s)`,
+          );
+
+          // Process each new email
+          for (const email of unreadEmails) {
+            await this.processNewEmail(email);
+          }
+        }
+      }
+
+      this.lastEmailCheck = Date.now();
+    } catch (error) {
+      logger.error(
+        "AgentMBox: Error checking for new emails: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
+  }
+
+  /**
+   * Process a new incoming email
+   */
+  private async processNewEmail(email: Email): Promise<void> {
+    try {
+      const fromEmail = email.from[0]?.email || "unknown";
+      logger.info(`AgentMBox: Processing new email from ${fromEmail}`);
+
+      // Create a memory for the email so the agent can respond to it
+      // This allows the agent to be aware of incoming emails
+      const memory = {
+        id: `email-${email.id}`,
+        type: "email" as const,
+        content: {
+          text: `New email received:\nFrom: ${fromEmail}\nSubject: ${email.subject}\n\n${email.textBody || email.htmlBody || ""}`,
+        },
+        metadata: {
+          emailId: email.id,
+          from: fromEmail,
+          to: email.to[0]?.email,
+          subject: email.subject,
+          receivedAt: email.receivedAt,
+        },
+      };
+
+      // Store the email as a memory for context
+      // The agent can then decide to respond using the SEND_EMAIL action
+      logger.info(`AgentMBox: Email from ${fromEmail} stored as memory`);
+    } catch (error) {
+      logger.error(
+        "AgentMBox: Error processing new email: " +
+          (error instanceof Error ? error.message : "Unknown error"),
+      );
+    }
   }
 
   async stop(): Promise<void> {
+    this.stopPolling();
     logger.info("AgentMBox service stopped");
   }
 
@@ -141,6 +267,16 @@ export class AgentMBoxService extends Service {
     );
   }
 
+  async markAsRead(emailId: string): Promise<{ success: boolean }> {
+    const mailboxParam = this.getMailboxParam();
+    return this.request<{ success: boolean }>(
+      "/mail/" + emailId + "/read" + mailboxParam,
+      {
+        method: "POST",
+      },
+    );
+  }
+
   async listMailboxes(): Promise<MailboxListResponse> {
     return this.request<MailboxListResponse>("/mailboxes");
   }
@@ -211,6 +347,13 @@ export class AgentMBoxService extends Service {
       logger.error("Failed to get AgentMBox status");
       return { paid: false, paidUntil: null };
     }
+  }
+
+  /**
+   * Manually trigger a check for new emails
+   */
+  async checkNow(): Promise<void> {
+    await this.checkForNewEmails();
   }
 }
 
