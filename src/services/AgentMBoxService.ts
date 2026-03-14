@@ -23,6 +23,7 @@ export class AgentMBoxService extends Service {
   private baseUrl: string = "https://agentmbox.com/api/v1";
 
   static serviceName = "agentmbox" as const;
+  static serviceType = "agentmbox" as const;
 
   constructor(runtime?: IAgentRuntime) {
     super(runtime!);
