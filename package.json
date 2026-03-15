@@ -19,9 +19,10 @@
   },
   "dependencies": {
     "@elizaos/core": "^1.0.0",
-    "@solana/web3.js": "^1.95.0",
     "@solana/spl-token": "^0.4.0",
-    "bs58": "^5.0.0"
+    "@solana/web3.js": "^1.95.0",
+    "bs58": "^5.0.0",
+    "drizzle-orm": "^0.45.1"
   },
   "devDependencies": {
     "@types/bs58": "^4.0.0",

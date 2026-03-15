@@ -2,6 +2,7 @@
  * Onboarding Action
  * Allows the agent to self-onboard with AgentMBox - creates account, pays for subscription, sets up mailbox
  * Supports resuming interrupted onboarding flows
+ * Credentials are stored in the runtime's database for persistence
  * Based on: https://www.agentmbox.com/llm.txt
  */
 
@@ -14,6 +15,7 @@ import {
   type ActionExample,
   logger,
 } from "@elizaos/core";
+import { credentialsTable } from "../types/schema";
 
 interface OnboardingStatus {
   stage:
@@ -411,9 +413,47 @@ export const onboardingAction: Action = {
 
       logger.info(`AgentMBox: Mailbox created: ${mailboxAddress}`);
 
-      // Save final credentials to runtime settings
+      // Save final credentials to runtime settings (backward compat)
       runtime.setSetting(SETTINGS.API_KEY, apiKey, true);
       runtime.setSetting(SETTINGS.MAILBOX, mailboxAddress, true);
+
+      // Also save to database for persistence
+      try {
+        const db = (runtime as any).databaseAdapter?.db;
+        if (db) {
+          await db
+            .insert(credentialsTable)
+            .values({
+              agentId: runtime.agentId,
+              apiKey,
+              mailbox: mailboxAddress,
+              solanaAddress: paymentAddress,
+              isPaid: true,
+              paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+              ownerEmail,
+              apiKeyCreatedAt: new Date(),
+              apiKeyName: `${agentName}-key`,
+            })
+            .onConflictDoUpdate({
+              target: credentialsTable.agentId,
+              set: {
+                apiKey,
+                mailbox: mailboxAddress,
+                solanaAddress: paymentAddress,
+                isPaid: true,
+                paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                ownerEmail,
+                updatedAt: new Date(),
+              },
+            });
+          logger.info("AgentMBox: Credentials saved to database");
+        }
+      } catch (dbError) {
+        logger.warn(
+          "AgentMBox: Failed to save credentials to database:",
+          dbError,
+        );
+      }
 
       // Clear onboarding state since we're done
       clearOnboardingState(runtime);
