@@ -7,10 +7,9 @@
   "type": "module",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "require": "./dist/index.js",
-      "default": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "scripts": {
@@ -25,8 +24,14 @@
     "bs58": "^5.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
     "@types/bs58": "^4.0.0",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "eslint": "^10.0.3",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
+    "msw": "^2.12.11",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0"
   },

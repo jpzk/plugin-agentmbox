@@ -1,6 +1,7 @@
 /**
  * Onboarding Action
  * Allows the agent to self-onboard with AgentMBox - creates account, pays for subscription, sets up mailbox
+ * Supports resuming interrupted onboarding flows
  * Based on: https://www.agentmbox.com/llm.txt
  */
 
@@ -29,9 +30,27 @@ interface OnboardingStatus {
   error?: string;
 }
 
+interface OnboardingState {
+  stage: OnboardingStatus["stage"];
+  ownerEmail?: string;
+  password?: string;
+  sessionCookie?: string;
+  apiKey?: string;
+  paymentAddress?: string;
+  agentName?: string;
+}
+
 const BASE_URL = "https://agentmbox.com/api/v1";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGZwyTDt1v";
 const PAYMENT_AMOUNT = 5_000_000; // 5 USDC in lamports
+
+// Settings keys for intermediate state
+const SETTINGS = {
+  API_KEY: "AGENTMBOX_API_KEY",
+  MAILBOX: "AGENTMBOX_MAILBOX",
+  ONBOARDING_STATE: "AGENTMBOX_ONBOARDING_STATE",
+  SOLANA_PRIVATE_KEY: "SOLANA_PRIVATE_KEY",
+};
 
 function generatePassword(length: number = 32): string {
   const chars =
@@ -45,10 +64,28 @@ function generatePassword(length: number = 32): string {
   return password;
 }
 
+function getOnboardingState(runtime: IAgentRuntime): OnboardingState | null {
+  const stateJson = runtime.getSetting(SETTINGS.ONBOARDING_STATE);
+  if (!stateJson) return null;
+  try {
+    return JSON.parse(stateJson) as OnboardingState;
+  } catch {
+    return null;
+  }
+}
+
+function saveOnboardingState(runtime: IAgentRuntime, state: OnboardingState) {
+  runtime.setSetting(SETTINGS.ONBOARDING_STATE, JSON.stringify(state), true);
+}
+
+function clearOnboardingState(runtime: IAgentRuntime) {
+  runtime.setSetting(SETTINGS.ONBOARDING_STATE, "", true);
+}
+
 async function getAgentWallet(runtime: IAgentRuntime) {
   try {
     const privateKeyBase58 = String(
-      runtime.getSetting("SOLANA_PRIVATE_KEY") || "",
+      runtime.getSetting(SETTINGS.SOLANA_PRIVATE_KEY) || "",
     );
     if (privateKeyBase58) {
       const { default: bs58 } = await import("bs58");
@@ -80,7 +117,7 @@ async function getAgentWallet(runtime: IAgentRuntime) {
 export const onboardingAction: Action = {
   name: "AGENTMBOX_ONBOARDING",
   description:
-    "Set up AgentMBox email for the agent - creates an account, pays 5 USDC on Solana, and creates a mailbox. The agent needs a Solana wallet with USDC to pay for the subscription.",
+    "Set up AgentMBox email for the agent - creates an account, pays 5 USDC on Solana, and creates a mailbox. The agent needs a Solana wallet with USDC to pay for the subscription. Supports resuming interrupted flows.",
 
   handler: async (
     runtime: IAgentRuntime,
@@ -89,9 +126,9 @@ export const onboardingAction: Action = {
     _options: Record<string, unknown>,
     callback?: HandlerCallback,
   ) => {
-    // Check if already onboarded
-    const existingApiKey = runtime.getSetting("AGENTMBOX_API_KEY");
-    const existingMailbox = runtime.getSetting("AGENTMBOX_MAILBOX");
+    // Check if already fully onboarded
+    const existingApiKey = runtime.getSetting(SETTINGS.API_KEY);
+    const existingMailbox = runtime.getSetting(SETTINGS.MAILBOX);
 
     if (existingApiKey && existingMailbox) {
       const msg = `Already onboarded! Mailbox: ${existingMailbox}`;
@@ -105,105 +142,169 @@ export const onboardingAction: Action = {
       return { success: true, mailbox: existingMailbox };
     }
 
-    let status: OnboardingStatus = { stage: "pending" };
-    let apiKey = "";
+    // Try to resume from saved state
+    let savedState = getOnboardingState(runtime);
+    let resumeMode =
+      !!savedState &&
+      savedState.stage !== "complete" &&
+      savedState.stage !== "error";
+
+    let status: OnboardingStatus = savedState
+      ? { stage: savedState.stage }
+      : { stage: "pending" };
+    let apiKey = savedState?.apiKey || "";
     let mailboxAddress = "";
 
+    const agentName =
+      runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
+
     try {
-      // Step 1: Create account
-      // The email field is the account owner's email for notifications (not the agent mailbox)
-      // Per https://www.agentmbox.com/llm.txt - it is not verified, ask owner for their email
-      // If owner doesn't care, generate any placeholder like agent-RANDOM@example.com
-      const agentName =
-        runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
-      const randomNum = Math.floor(Math.random() * 10000000);
-      const ownerEmail = `agent-${agentName}-${randomNum}@example.com`;
-      const password = generatePassword(32);
+      // ========== Step 1: Create account (or resume) ==========
+      let ownerEmail: string;
+      let password: string;
+      let sessionCookie: string;
 
-      logger.info("AgentMBox: Creating account...");
-      const signupResponse = await fetch(`${BASE_URL}/auth/signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: ownerEmail,
+      if (resumeMode && savedState?.ownerEmail && savedState?.password) {
+        // Resume: use saved credentials
+        ownerEmail = savedState.ownerEmail;
+        password = savedState.password;
+        sessionCookie = savedState.sessionCookie || "";
+        logger.info("AgentMBox: Resuming with saved account:", ownerEmail);
+        status = { stage: "account_created" };
+      } else {
+        // Start fresh: create new account
+        const randomNum = Math.floor(Math.random() * 10000000);
+        ownerEmail = `agent-${agentName}-${randomNum}@example.com`;
+        password = generatePassword(32);
+
+        logger.info("AgentMBox: Creating account...");
+        const signupResponse = await fetch(`${BASE_URL}/auth/signup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: ownerEmail,
+            password,
+          }),
+        });
+
+        if (!signupResponse.ok) {
+          const error = await signupResponse.json();
+          throw new Error(`Account creation failed: ${error.error}`);
+        }
+
+        logger.info("AgentMBox: Account created");
+
+        // Get session cookie
+        const setCookieHeader = signupResponse.headers.get("set-cookie") || "";
+        sessionCookie = setCookieHeader.split(";")[0];
+
+        // Save state after account creation
+        saveOnboardingState(runtime, {
+          stage: "account_created",
+          ownerEmail,
           password,
-        }),
-      });
-
-      if (!signupResponse.ok) {
-        const error = await signupResponse.json();
-        throw new Error(`Account creation failed: ${error.error}`);
+          sessionCookie,
+          agentName,
+        });
+        status = { stage: "account_created" };
       }
 
-      const signupData = await signupResponse.json();
-      status = { stage: "account_created" };
-      logger.info("AgentMBox: Account created");
+      // ========== Step 2: Create API key (or resume) ==========
+      if (resumeMode && savedState?.apiKey) {
+        // Resume: use saved API key
+        apiKey = savedState.apiKey;
+        logger.info("AgentMBox: Resuming with saved API key");
+        status = { stage: "api_key_created" };
+      } else {
+        // Create new API key
+        logger.info("AgentMBox: Creating API key...");
+        const keyResponse = await fetch(`${BASE_URL}/keys`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: sessionCookie,
+          },
+          body: JSON.stringify({ name: `${agentName}-key` }),
+        });
 
-      // Get session cookie from signup response for API key creation
-      // Per https://www.agentmbox.com/llm.txt - "A session cookie is set automatically"
-      const setCookieHeader = signupResponse.headers.get("set-cookie") || "";
-      const sessionCookie = setCookieHeader.split(";")[0];
+        if (!keyResponse.ok) {
+          const error = await keyResponse.json();
+          throw new Error(`API key creation failed: ${error.error}`);
+        }
 
-      // Step 2: Create API key
-      // Use session cookie from signup, not API key (API key doesn't exist yet)
-      logger.info("AgentMBox: Creating API key...");
-      const keyResponse = await fetch(`${BASE_URL}/keys`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: sessionCookie,
-        },
-        body: JSON.stringify({ name: `${agentName}-key` }),
-      });
+        const keyData = await keyResponse.json();
+        apiKey = keyData.key;
 
-      if (!keyResponse.ok) {
-        const error = await keyResponse.json();
-        throw new Error(`API key creation failed: ${error.error}`);
+        // Save state after API key creation
+        saveOnboardingState(runtime, {
+          stage: "api_key_created",
+          ownerEmail,
+          password,
+          sessionCookie,
+          apiKey,
+          agentName,
+        });
+        status = { stage: "api_key_created" };
+        logger.info("AgentMBox: API key created");
       }
 
-      const keyData = await keyResponse.json();
-      apiKey = keyData.key;
-      status = { stage: "api_key_created" };
-      logger.info("AgentMBox: API key created:", keyData.keyPrefix);
+      // ========== Step 3: Get payment address (or resume) ==========
+      let paymentAddress: string;
 
-      // Step 3: Get payment address
-      logger.info("AgentMBox: Getting payment address...");
-      const paymentResponse = await fetch(`${BASE_URL}/payment`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
+      if (resumeMode && savedState?.paymentAddress) {
+        paymentAddress = savedState.paymentAddress;
+        logger.info("AgentMBox: Resuming with saved payment address");
+        status = { stage: "awaiting_payment", paymentAddress };
+      } else {
+        logger.info("AgentMBox: Getting payment address...");
+        const paymentResponse = await fetch(`${BASE_URL}/payment`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
 
-      if (!paymentResponse.ok) {
-        const error = await paymentResponse.json();
-        throw new Error(`Payment status failed: ${error.error}`);
+        if (!paymentResponse.ok) {
+          const error = await paymentResponse.json();
+          throw new Error(`Payment status failed: ${error.error}`);
+        }
+
+        const paymentData = await paymentResponse.json();
+        paymentAddress = paymentData.solanaAddress;
+
+        // Save state after getting payment address
+        saveOnboardingState(runtime, {
+          stage: "awaiting_payment",
+          ownerEmail,
+          password,
+          sessionCookie,
+          apiKey,
+          paymentAddress,
+          agentName,
+        });
+        status = { stage: "awaiting_payment", paymentAddress };
+        logger.info("AgentMBox: Payment address obtained");
       }
 
-      const paymentData = await paymentResponse.json();
-      status = {
-        stage: "awaiting_payment",
-        paymentAddress: paymentData.solanaAddress,
-      };
-
+      // Notify about payment requirement
       if (callback) {
         await callback({
-          text: `Account created! Payment required: Please send 5 USDC to ${paymentData.solanaAddress}`,
+          text: `Account ready! Payment required: Please send 5 USDC to ${paymentAddress}`,
           values: {
             success: false,
             stage: "awaiting_payment",
-            paymentAddress: paymentData.solanaAddress,
+            paymentAddress,
           },
         });
       }
 
-      // Step 4: Pay for subscription (if wallet available)
+      // ========== Step 4: Pay for subscription (if wallet available) ==========
       const wallet = await getAgentWallet(runtime);
 
       if (!wallet) {
-        const msg = `Payment required! Please send 5 USDC to: ${paymentData.solanaAddress}`;
+        const msg = `Payment required! Please send 5 USDC to: ${paymentAddress}`;
         logger.warn(msg);
         return {
           success: false,
           stage: "awaiting_payment",
-          paymentAddress: paymentData.solanaAddress,
+          paymentAddress,
           message: msg,
         };
       }
@@ -220,7 +321,7 @@ export const onboardingAction: Action = {
           "https://api.mainnet-beta.solana.com",
         );
         const signer = Keypair.fromSecretKey(wallet.privateKey);
-        const toPublicKey = new PublicKey(paymentData.solanaAddress);
+        const toPublicKey = new PublicKey(paymentAddress);
 
         const fromTokenAccount = await getOrCreateAssociatedTokenAccount(
           connection,
@@ -248,16 +349,16 @@ export const onboardingAction: Action = {
         logger.info("AgentMBox: USDC transfer complete");
       } catch (transferError) {
         logger.error("USDC transfer failed:", transferError);
-        const msg = `Payment required! Please send 5 USDC to: ${paymentData.solanaAddress}`;
+        const msg = `Payment required! Please send 5 USDC to: ${paymentAddress}`;
         return {
           success: false,
           stage: "awaiting_payment",
-          paymentAddress: paymentData.solanaAddress,
+          paymentAddress,
           message: msg,
         };
       }
 
-      // Step 5: Confirm payment
+      // ========== Step 5: Confirm payment ==========
       logger.info("AgentMBox: Checking payment...");
       let paid = false;
       for (let i = 0; i < 12 && !paid; i++) {
@@ -270,7 +371,7 @@ export const onboardingAction: Action = {
           const checkData = await checkResponse.json();
           paid = checkData.paid;
           if (paid) {
-            status = { stage: "paid" };
+            status = { stage: "paid", paymentAddress };
             logger.info("AgentMBox: Payment confirmed");
           }
         } catch {
@@ -282,7 +383,7 @@ export const onboardingAction: Action = {
         throw new Error("Payment not confirmed after 60 seconds");
       }
 
-      // Step 6: Create mailbox
+      // ========== Step 6: Create mailbox ==========
       logger.info("AgentMBox: Creating mailbox...");
       const mailboxResponse = await fetch(`${BASE_URL}/mailboxes`, {
         method: "POST",
@@ -310,9 +411,12 @@ export const onboardingAction: Action = {
 
       logger.info(`AgentMBox: Mailbox created: ${mailboxAddress}`);
 
-      // Save credentials to runtime settings
-      runtime.setSetting("AGENTMBOX_API_KEY", apiKey, true);
-      runtime.setSetting("AGENTMBOX_MAILBOX", mailboxAddress);
+      // Save final credentials to runtime settings
+      runtime.setSetting(SETTINGS.API_KEY, apiKey, true);
+      runtime.setSetting(SETTINGS.MAILBOX, mailboxAddress, true);
+
+      // Clear onboarding state since we're done
+      clearOnboardingState(runtime);
 
       if (callback) {
         await callback({

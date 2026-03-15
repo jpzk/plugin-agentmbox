@@ -10,6 +10,7 @@ import {
   type Memory,
   type State,
   type ActionExample,
+  logger,
 } from "@elizaos/core";
 import { AgentMBoxService } from "../services/AgentMBoxService";
 
@@ -21,7 +22,7 @@ export const sendEmailAction: Action = {
     message: Memory,
     state: State,
     options: Record<string, unknown>,
-    callback?: HandlerCallback
+    callback?: HandlerCallback,
   ) => {
     const service = runtime.getService<AgentMBoxService>("agentmbox");
     if (!service) {
@@ -68,7 +69,8 @@ export const sendEmailAction: Action = {
         },
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to send email", { error: errorMessage });
 
       if (callback) {

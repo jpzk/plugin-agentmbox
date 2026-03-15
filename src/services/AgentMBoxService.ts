@@ -26,6 +26,9 @@ export class AgentMBoxService extends Service {
   private pollingInterval: number = DEFAULT_POLLING_INTERVAL;
   private pollingTimer: NodeJS.Timeout | null = null;
   private lastEmailCheck: number = 0;
+  private cachedEmails: Email[] = [];
+  private cacheTimestamp: number = 0;
+  private cacheTTL: number = 60000; // Cache for 1 minute
 
   static serviceName = "agentmbox" as const;
   static serviceType = "EMAIL" as const;
@@ -125,6 +128,10 @@ export class AgentMBoxService extends Service {
       const response = await this.listEmails(10, 0);
 
       if (response.emails && response.emails.length > 0) {
+        // Update cache
+        this.cachedEmails = response.emails;
+        this.cacheTimestamp = Date.now();
+
         // Find unread emails
         const unreadEmails = response.emails.filter(
           (email) =>
@@ -354,6 +361,62 @@ export class AgentMBoxService extends Service {
    */
   async checkNow(): Promise<void> {
     await this.checkForNewEmails();
+  }
+
+  /**
+   * Get cached emails (for provider use)
+   * Returns cached data if available and not expired
+   */
+  async getCachedEmails(limit = 10): Promise<Email[]> {
+    const now = Date.now();
+
+    // If cache is valid, return cached data
+    if (
+      this.cachedEmails.length > 0 &&
+      now - this.cacheTimestamp < this.cacheTTL
+    ) {
+      return this.cachedEmails.slice(0, limit);
+    }
+
+    // Otherwise, refresh cache
+    try {
+      const response = await this.listEmails(limit, 0);
+      this.cachedEmails = response.emails;
+      this.cacheTimestamp = now;
+      return this.cachedEmails;
+    } catch (error) {
+      // If API call fails but we have stale cache, return it
+      if (this.cachedEmails.length > 0) {
+        logger.warn("AgentMBox: Using stale cache due to API error");
+        return this.cachedEmails.slice(0, limit);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get cached email count info
+   */
+  getEmailStats(): {
+    unreadCount: number;
+    totalCount: number;
+    lastPollTime: number;
+  } {
+    const unreadCount = this.cachedEmails.filter((e) => !e.isRead).length;
+
+    return {
+      unreadCount,
+      totalCount: this.cachedEmails.length,
+      lastPollTime: this.cacheTimestamp,
+    };
+  }
+
+  /**
+   * Get cached emails synchronously - NO API call
+   * Only reads from the polling cache
+   */
+  getCachedEmailsSync(limit = 10): Email[] {
+    return this.cachedEmails.slice(0, limit);
   }
 }
 

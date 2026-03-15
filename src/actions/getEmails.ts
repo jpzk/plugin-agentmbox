@@ -10,18 +10,20 @@ import {
   type Memory,
   type State,
   type ActionExample,
+  logger,
 } from "@elizaos/core";
 import { AgentMBoxService } from "../services/AgentMBoxService";
 
 export const getEmailsAction: Action = {
   name: "GET_EMAILS",
-  description: "Retrieve emails from the AgentMBox mailbox. Can filter by read status and limit results.",
+  description:
+    "Retrieve emails from the AgentMBox mailbox. Can filter by read status and limit results.",
   handler: async (
     runtime: IAgentRuntime,
     message: Memory,
     state: State,
     options: Record<string, unknown>,
-    callback?: HandlerCallback
+    callback?: HandlerCallback,
   ) => {
     const service = runtime.getService<AgentMBoxService>("agentmbox");
     if (!service) {
@@ -89,7 +91,8 @@ export const getEmailsAction: Action = {
         },
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
       logger.error("Failed to get emails", { error: errorMessage });
 
       if (callback) {
