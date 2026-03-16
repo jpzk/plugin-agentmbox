@@ -116,6 +116,7 @@ function saveOnboardingState(runtime: IAgentRuntime, state: OnboardingState) {
           agentId: runtime.agentId,
           apiKey: "",
           mailbox: "",
+          sourceId: runtime.character?.id || runtime.character?.name || null,
           onboardingState: stateJson,
         })
         .onConflictDoUpdate({
@@ -621,6 +622,8 @@ export const onboardingAction: Action = {
               isPaid: true,
               paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
               ownerEmail,
+              sourceId:
+                runtime.character?.id || runtime.character?.name || null,
               apiKeyCreatedAt: new Date(),
               apiKeyName: `${agentName}-key`,
             })
@@ -633,6 +636,8 @@ export const onboardingAction: Action = {
                 isPaid: true,
                 paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
                 ownerEmail,
+                sourceId:
+                  runtime.character?.id || runtime.character?.name || null,
                 updatedAt: new Date(),
               },
             });

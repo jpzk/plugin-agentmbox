@@ -47,6 +47,9 @@ export const credentialsTable = agentmbox.table(
     // Owner account email (for notifications, not the mailbox)
     ownerEmail: varchar("owner_email", { length: 255 }),
 
+    // Source identifier (e.g., character ID or source name)
+    sourceId: varchar("source_id", { length: 255 }),
+
     // Onboarding state for resume capability
     onboardingState: jsonb("onboarding_state"),
 
@@ -87,6 +90,9 @@ export const emailsTable = agentmbox.table(
     // Metadata
     isRead: boolean("is_read").default(false).notNull(),
     hasAttachment: boolean("has_attachment").default(false).notNull(),
+
+    // Source identifier (e.g., character ID or source name)
+    sourceId: varchar("source_id", { length: 255 }),
 
     // When received
     receivedAt: timestamp("received_at").notNull(),
