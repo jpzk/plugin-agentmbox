@@ -1,10 +1,25 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, index, boolean } from "drizzle-orm/pg-core";
+import {
+  pgSchema,
+  uuid,
+  varchar,
+  text,
+  timestamp,
+  jsonb,
+  index,
+  boolean,
+} from "drizzle-orm/pg-core";
+
+/**
+ * AgentMBox custom schema for isolation
+ * Tables will be created in the "agentmbox" schema
+ */
+const agentmbox = pgSchema("agentmbox");
 
 /**
  * AgentMBox Credentials Table
  * Stores API credentials per agent - survives restarts
  */
-export const credentialsTable = pgTable(
+export const credentialsTable = agentmbox.table(
   "agentmbox_credentials",
   {
     // Agent ID to scope credentials per agent
@@ -44,14 +59,14 @@ export const credentialsTable = pgTable(
     index("idx_agentmbox_credentials_agent_id").on(table.agentId),
     // Index for mailbox lookups
     index("idx_agentmbox_credentials_mailbox").on(table.mailbox),
-  ]
+  ],
 );
 
 /**
  * AgentMBox Emails Table
  * Stores email metadata for quick access
  */
-export const emailsTable = pgTable(
+export const emailsTable = agentmbox.table(
   "agentmbox_emails",
   {
     // Link to credentials
@@ -84,10 +99,16 @@ export const emailsTable = pgTable(
   },
   (table) => [
     // Index for fetching unread emails
-    index("idx_agentmbox_emails_credential_unread").on(table.credentialId, table.isRead),
+    index("idx_agentmbox_emails_credential_unread").on(
+      table.credentialId,
+      table.isRead,
+    ),
     // Index for chronological ordering
-    index("idx_agentmbox_emails_received").on(table.credentialId, table.receivedAt),
-  ]
+    index("idx_agentmbox_emails_received").on(
+      table.credentialId,
+      table.receivedAt,
+    ),
+  ],
 );
 
 /**
