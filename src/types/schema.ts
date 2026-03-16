@@ -1,5 +1,5 @@
 import {
-  pgSchema,
+  pgTable,
   uuid,
   varchar,
   text,
@@ -10,20 +10,18 @@ import {
 } from "drizzle-orm/pg-core";
 
 /**
- * AgentMBox custom schema for isolation
- * Tables will be created in the "agentmbox" schema
- */
-const agentmbox = pgSchema("agentmbox");
-
-/**
  * AgentMBox Credentials Table
  * Stores API credentials per agent - survives restarts
+ * Uses shared table pattern (no agentId field in table - scoped by table name)
  */
-export const credentialsTable = agentmbox.table(
+export const credentialsTable = pgTable(
   "agentmbox_credentials",
   {
+    // Primary key for the record
+    id: uuid("id").primaryKey().defaultRandom(),
+
     // Agent ID to scope credentials per agent
-    agentId: uuid("agent_id").notNull(),
+    agentId: uuid("agent_id").notNull().unique(),
 
     // API key for AgentMBox API
     apiKey: varchar("api_key", { length: 255 }).notNull(),
@@ -69,7 +67,7 @@ export const credentialsTable = agentmbox.table(
  * AgentMBox Emails Table
  * Stores email metadata for quick access
  */
-export const emailsTable = agentmbox.table(
+export const emailsTable = pgTable(
   "agentmbox_emails",
   {
     // Link to credentials

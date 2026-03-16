@@ -85,7 +85,7 @@ async function getOnboardingState(
       const result = await db
         .select({ onboardingState: credentialsTable.onboardingState })
         .from(credentialsTable)
-        .where(eq(credentialsTable.agentId, runtime.agentId))
+        .where(eq(credentialsTable.agentId, runtime.agentId as any))
         .limit(1);
 
       if (result && result[0]?.onboardingState) {
@@ -113,7 +113,7 @@ function saveOnboardingState(runtime: IAgentRuntime, state: OnboardingState) {
       const stateJson = JSON.stringify(state);
       db.insert(credentialsTable)
         .values({
-          agentId: runtime.agentId,
+          agentId: runtime.agentId as any,
           apiKey: "",
           mailbox: "",
           sourceId: runtime.character?.id || runtime.character?.name || null,
@@ -147,7 +147,7 @@ function clearOnboardingState(runtime: IAgentRuntime) {
     if (db) {
       db.update(credentialsTable)
         .set({ onboardingState: null, updatedAt: new Date() })
-        .where(eq(credentialsTable.agentId, runtime.agentId))
+        .where(eq(credentialsTable.agentId, runtime.agentId as any))
         .catch(() => {
           // Ignore - row may not exist yet
         });
@@ -615,7 +615,7 @@ export const onboardingAction: Action = {
           await db
             .insert(credentialsTable)
             .values({
-              agentId: runtime.agentId,
+              agentId: runtime.agentId as any,
               apiKey,
               mailbox: mailboxAddress,
               solanaAddress: paymentAddress,
