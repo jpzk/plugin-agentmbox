@@ -1,5 +1,7 @@
 # @agentmbox/plugin-agentmbox
 
+[![Tests](https://github.com/agentmbox/plugin-agentmbox/actions/workflows/test.yml/badge.svg)](https://github.com/agentmbox/plugin-agentmbox/actions/workflows/test.yml)
+
 AgentMBox email integration plugin for ElizaOS - enables AI agents to send and receive emails via the AgentMBox API.
 
 **No configuration needed!** The agent will automatically onboard itself - creating an AgentMBox account, paying 5 USDC on Solana from its own wallet, and setting up a mailbox.

@@ -1,9 +1,12 @@
 /**
  * Onboarding Action
- * Allows the agent to self-onboard with AgentMBox - creates account, pays for subscription, sets up mailbox
- * Supports resuming interrupted onboarding flows
- * Credentials are stored in the runtime's database for persistence
- * Based on: https://www.agentmbox.com/llm.txt
+ * Multi-step onboarding workflow with callbacks for progress updates
+ * Step 1: Create account
+ * Step 2: Create API key
+ * Step 3: Get payment address
+ * Step 4: Pay for subscription (or request manual payment)
+ * Step 5: Confirm payment
+ * Step 6: Create mailbox
  */
 
 import {
@@ -15,44 +18,28 @@ import {
   type ActionExample,
   logger,
 } from "@elizaos/core";
+import { eq } from "drizzle-orm";
 import { credentialsTable } from "../types/schema";
-
-interface OnboardingStatus {
-  stage:
-    | "pending"
-    | "account_created"
-    | "api_key_created"
-    | "awaiting_payment"
-    | "paid"
-    | "mailbox_created"
-    | "complete"
-    | "error";
-  paymentAddress?: string;
-  mailbox?: string;
-  error?: string;
-}
-
-interface OnboardingState {
-  stage: OnboardingStatus["stage"];
-  ownerEmail?: string;
-  password?: string;
-  sessionCookie?: string;
-  apiKey?: string;
-  paymentAddress?: string;
-  agentName?: string;
-}
 
 const BASE_URL = "https://agentmbox.com/api/v1";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGZwyTDt1v";
 const PAYMENT_AMOUNT = 5_000_000; // 5 USDC in lamports
 
-// Settings keys for intermediate state
 const SETTINGS = {
   API_KEY: "AGENTMBOX_API_KEY",
   MAILBOX: "AGENTMBOX_MAILBOX",
   ONBOARDING_STATE: "AGENTMBOX_ONBOARDING_STATE",
   SOLANA_PRIVATE_KEY: "SOLANA_PRIVATE_KEY",
 };
+
+const STEPS = [
+  { num: 1, name: "account", description: "Creating account" },
+  { num: 2, name: "api_key", description: "Creating API key" },
+  { num: 3, name: "payment_address", description: "Getting payment address" },
+  { num: 4, name: "payment", description: "Processing payment" },
+  { num: 5, name: "confirmation", description: "Confirming payment" },
+  { num: 6, name: "mailbox", description: "Creating mailbox" },
+];
 
 function generatePassword(length: number = 32): string {
   const chars =
@@ -66,28 +53,113 @@ function generatePassword(length: number = 32): string {
   return password;
 }
 
-function getOnboardingState(runtime: IAgentRuntime): OnboardingState | null {
-  const stateJson = runtime.getSetting(SETTINGS.ONBOARDING_STATE);
-  if (!stateJson) return null;
-  try {
-    return JSON.parse(stateJson) as OnboardingState;
-  } catch {
-    return null;
+interface OnboardingState {
+  stage: string;
+  ownerEmail: string;
+  password: string;
+  sessionCookie?: string;
+  apiKey?: string;
+  paymentAddress?: string;
+  agentName: string;
+}
+
+async function getOnboardingState(
+  runtime: IAgentRuntime,
+): Promise<OnboardingState | null> {
+  // First check runtime settings (in-memory)
+  const stateJson = runtime.getSetting(SETTINGS.ONBOARDING_STATE) as
+    | string
+    | null;
+  if (stateJson) {
+    try {
+      return JSON.parse(stateJson) as OnboardingState;
+    } catch {
+      // Invalid JSON, continue to check database
+    }
   }
+
+  // Fall back to database for persistence across restarts
+  try {
+    const db = (runtime as any).databaseAdapter?.db;
+    if (db) {
+      const result = await db
+        .select({ onboardingState: credentialsTable.onboardingState })
+        .from(credentialsTable)
+        .where(eq(credentialsTable.agentId, runtime.agentId))
+        .limit(1);
+
+      if (result && result[0]?.onboardingState) {
+        const dbState = result[0].onboardingState as string;
+        // Sync to runtime for next time
+        runtime.setSetting(SETTINGS.ONBOARDING_STATE, dbState);
+        return JSON.parse(dbState) as OnboardingState;
+      }
+    }
+  } catch (error) {
+    logger.warn("Failed to load onboarding state from database:", error);
+  }
+
+  return null;
 }
 
 function saveOnboardingState(runtime: IAgentRuntime, state: OnboardingState) {
-  runtime.setSetting(SETTINGS.ONBOARDING_STATE, JSON.stringify(state), true);
+  // Save to runtime settings (in-memory)
+  runtime.setSetting(SETTINGS.ONBOARDING_STATE, JSON.stringify(state));
+
+  // Also save to database for persistence across restarts
+  try {
+    const db = (runtime as any).databaseAdapter?.db;
+    if (db) {
+      const stateJson = JSON.stringify(state);
+      db.insert(credentialsTable)
+        .values({
+          agentId: runtime.agentId,
+          apiKey: "",
+          mailbox: "",
+          onboardingState: stateJson,
+        })
+        .onConflictDoUpdate({
+          target: credentialsTable.agentId,
+          set: {
+            onboardingState: stateJson,
+            updatedAt: new Date(),
+          },
+        })
+        .then(() => {
+          logger.info("Onboarding state saved to database");
+        })
+        .catch((dbError: any) => {
+          logger.warn("Failed to save onboarding state to database:", dbError);
+        });
+    }
+  } catch (error) {
+    logger.warn("Failed to save onboarding state to database:", error);
+  }
 }
 
 function clearOnboardingState(runtime: IAgentRuntime) {
-  runtime.setSetting(SETTINGS.ONBOARDING_STATE, "", true);
+  runtime.setSetting(SETTINGS.ONBOARDING_STATE, "");
+
+  // Also clear from database
+  try {
+    const db = (runtime as any).databaseAdapter?.db;
+    if (db) {
+      db.update(credentialsTable)
+        .set({ onboardingState: null, updatedAt: new Date() })
+        .where(eq(credentialsTable.agentId, runtime.agentId))
+        .catch(() => {
+          // Ignore - row may not exist yet
+        });
+    }
+  } catch (error) {
+    // Ignore - row may not exist yet
+  }
 }
 
 async function getAgentWallet(runtime: IAgentRuntime) {
   try {
     const privateKeyBase58 = String(
-      runtime.getSetting(SETTINGS.SOLANA_PRIVATE_KEY) || "",
+      (runtime.getSetting(SETTINGS.SOLANA_PRIVATE_KEY) as string | null) || "",
     );
     if (privateKeyBase58) {
       const { default: bs58 } = await import("bs58");
@@ -116,91 +188,123 @@ async function getAgentWallet(runtime: IAgentRuntime) {
   return null;
 }
 
+async function sendCallback(
+  callback: HandlerCallback | undefined,
+  step: number,
+  totalSteps: number,
+  stepName: string,
+  description: string,
+  status: "starting" | "complete" | "waiting" | "error",
+  data?: Record<string, any>,
+) {
+  if (!callback) return;
+
+  const emojis: Record<string, string> = {
+    starting: "⏳",
+    complete: "✅",
+    waiting: "⚠️",
+    error: "❌",
+  };
+
+  const emoji = emojis[status] || "📋";
+
+  await callback({
+    text: `${emoji} Step ${step}/${totalSteps}: ${description}${status === "waiting" ? " - Manual action required" : ""}`,
+    values: {
+      step,
+      totalSteps,
+      stepName,
+      status,
+      ...data,
+    },
+  });
+}
+
 export const onboardingAction: Action = {
   name: "AGENTMBOX_ONBOARDING",
   description:
-    "Set up AgentMBox email for the agent - creates an account, pays 5 USDC on Solana, and creates a mailbox. The agent needs a Solana wallet with USDC to pay for the subscription. Supports resuming interrupted flows.",
+    "Set up AgentMBox email - multi-step onboarding with progress callbacks. Creates account, gets API key, processes payment, creates mailbox.",
 
-  handler: async (
-    runtime: IAgentRuntime,
-    _message: Memory,
-    _state: State,
-    _options: Record<string, unknown>,
-    callback?: HandlerCallback,
-  ) => {
-    // Check if already fully onboarded
-    const existingApiKey = runtime.getSetting(SETTINGS.API_KEY);
-    const existingMailbox = runtime.getSetting(SETTINGS.MAILBOX);
+  handler: async (runtime, message, _state, _options, callback) => {
+    // Check if already onboarded
+    const existingApiKey = runtime.getSetting(SETTINGS.API_KEY) as
+      | string
+      | null;
+    const existingMailbox = runtime.getSetting(SETTINGS.MAILBOX) as
+      | string
+      | null;
 
     if (existingApiKey && existingMailbox) {
-      const msg = `Already onboarded! Mailbox: ${existingMailbox}`;
-      logger.info(msg);
-      if (callback) {
-        await callback({
-          text: msg,
-          values: { success: true, mailbox: existingMailbox },
-        });
-      }
+      await sendCallback(
+        callback,
+        6,
+        6,
+        "complete",
+        "Already onboarded",
+        "complete",
+        { mailbox: existingMailbox },
+      );
       return { success: true, mailbox: existingMailbox };
     }
 
-    // Try to resume from saved state
-    let savedState = getOnboardingState(runtime);
-    let resumeMode =
-      !!savedState &&
+    const savedState = await getOnboardingState(runtime);
+    const resumeMode =
+      savedState?.stage &&
       savedState.stage !== "complete" &&
       savedState.stage !== "error";
 
-    let status: OnboardingStatus = savedState
-      ? { stage: savedState.stage }
-      : { stage: "pending" };
-    let apiKey = savedState?.apiKey || "";
-    let mailboxAddress = "";
-
     const agentName =
       runtime.character?.name?.toLowerCase().replace(/\s+/g, "-") || "agent";
+    let ownerEmail = "";
+    let password = "";
+    let sessionCookie = "";
+    let apiKey = "";
+    let paymentAddress: string = "";
+    let mailboxAddress = "";
 
     try {
-      // ========== Step 1: Create account (or resume) ==========
-      let ownerEmail: string;
-      let password: string;
-      let sessionCookie: string;
+      // ===== STEP 1: Create Account =====
+      await sendCallback(
+        callback,
+        1,
+        6,
+        "account",
+        "Creating account",
+        "starting",
+      );
 
       if (resumeMode && savedState?.ownerEmail && savedState?.password) {
-        // Resume: use saved credentials
         ownerEmail = savedState.ownerEmail;
         password = savedState.password;
         sessionCookie = savedState.sessionCookie || "";
-        logger.info("AgentMBox: Resuming with saved account:", ownerEmail);
-        status = { stage: "account_created" };
+        await sendCallback(
+          callback,
+          1,
+          6,
+          "account",
+          "Resuming account",
+          "complete",
+          { email: ownerEmail },
+        );
       } else {
-        // Start fresh: create new account
         const randomNum = Math.floor(Math.random() * 10000000);
         ownerEmail = `agent-${agentName}-${randomNum}@example.com`;
         password = generatePassword(32);
 
-        logger.info("AgentMBox: Creating account...");
         const signupResponse = await fetch(`${BASE_URL}/auth/signup`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: ownerEmail,
-            password,
-          }),
+          body: JSON.stringify({ email: ownerEmail, password }),
         });
 
         if (!signupResponse.ok) {
-          const error = await signupResponse.json();
+          const error = (await signupResponse.json()) as { error: string };
           throw new Error(`Account creation failed: ${error.error}`);
         }
 
-        logger.info("AgentMBox: Account created");
-
-        // Get session cookie
         const setCookieHeader = signupResponse.headers.get("set-cookie") || "";
         sessionCookie = setCookieHeader.split(";")[0];
 
-        // Save state after account creation
         saveOnboardingState(runtime, {
           stage: "account_created",
           ownerEmail,
@@ -208,18 +312,39 @@ export const onboardingAction: Action = {
           sessionCookie,
           agentName,
         });
-        status = { stage: "account_created" };
+
+        await sendCallback(
+          callback,
+          1,
+          6,
+          "account",
+          "Account created",
+          "complete",
+          { email: ownerEmail },
+        );
       }
 
-      // ========== Step 2: Create API key (or resume) ==========
+      // ===== STEP 2: Create API Key =====
+      await sendCallback(
+        callback,
+        2,
+        6,
+        "api_key",
+        "Creating API key",
+        "starting",
+      );
+
       if (resumeMode && savedState?.apiKey) {
-        // Resume: use saved API key
         apiKey = savedState.apiKey;
-        logger.info("AgentMBox: Resuming with saved API key");
-        status = { stage: "api_key_created" };
+        await sendCallback(
+          callback,
+          2,
+          6,
+          "api_key",
+          "Resuming with existing API key",
+          "complete",
+        );
       } else {
-        // Create new API key
-        logger.info("AgentMBox: Creating API key...");
         const keyResponse = await fetch(`${BASE_URL}/keys`, {
           method: "POST",
           headers: {
@@ -230,14 +355,16 @@ export const onboardingAction: Action = {
         });
 
         if (!keyResponse.ok) {
-          const error = await keyResponse.json();
+          const error = (await keyResponse.json()) as { error: string };
           throw new Error(`API key creation failed: ${error.error}`);
         }
 
-        const keyData = await keyResponse.json();
+        const keyData = (await keyResponse.json()) as {
+          key: string;
+          keyPrefix: string;
+        };
         apiKey = keyData.key;
 
-        // Save state after API key creation
         saveOnboardingState(runtime, {
           stage: "api_key_created",
           ownerEmail,
@@ -246,32 +373,45 @@ export const onboardingAction: Action = {
           apiKey,
           agentName,
         });
-        status = { stage: "api_key_created" };
-        logger.info("AgentMBox: API key created");
+
+        await sendCallback(
+          callback,
+          2,
+          6,
+          "api_key",
+          "API key created",
+          "complete",
+          { keyPrefix: keyData.keyPrefix },
+        );
       }
 
-      // ========== Step 3: Get payment address (or resume) ==========
-      let paymentAddress: string;
+      // ===== STEP 3: Get Payment Address =====
+      await sendCallback(
+        callback,
+        3,
+        6,
+        "payment_address",
+        "Getting payment address",
+        "starting",
+      );
 
       if (resumeMode && savedState?.paymentAddress) {
-        paymentAddress = savedState.paymentAddress;
-        logger.info("AgentMBox: Resuming with saved payment address");
-        status = { stage: "awaiting_payment", paymentAddress };
+        paymentAddress = savedState.paymentAddress as string;
       } else {
-        logger.info("AgentMBox: Getting payment address...");
         const paymentResponse = await fetch(`${BASE_URL}/payment`, {
           headers: { Authorization: `Bearer ${apiKey}` },
         });
 
         if (!paymentResponse.ok) {
-          const error = await paymentResponse.json();
-          throw new Error(`Payment status failed: ${error.error}`);
+          const error = (await paymentResponse.json()) as { error: string };
+          throw new Error(`Payment address failed: ${error.error}`);
         }
 
-        const paymentData = await paymentResponse.json();
+        const paymentData = (await paymentResponse.json()) as {
+          solanaAddress: string;
+        };
         paymentAddress = paymentData.solanaAddress;
 
-        // Save state after getting payment address
         saveOnboardingState(runtime, {
           stage: "awaiting_payment",
           ownerEmail,
@@ -281,38 +421,51 @@ export const onboardingAction: Action = {
           paymentAddress,
           agentName,
         });
-        status = { stage: "awaiting_payment", paymentAddress };
-        logger.info("AgentMBox: Payment address obtained");
       }
 
-      // Notify about payment requirement
-      if (callback) {
-        await callback({
-          text: `Account ready! Payment required: Please send 5 USDC to ${paymentAddress}`,
-          values: {
-            success: false,
-            stage: "awaiting_payment",
-            paymentAddress,
-          },
-        });
-      }
+      // Callback: Payment required
+      await sendCallback(
+        callback,
+        3,
+        6,
+        "payment_address",
+        "Payment address obtained",
+        "waiting",
+        { paymentAddress },
+      );
 
-      // ========== Step 4: Pay for subscription (if wallet available) ==========
+      // ===== STEP 4: Process Payment =====
+      await sendCallback(
+        callback,
+        4,
+        6,
+        "payment",
+        "Processing payment",
+        "starting",
+      );
+
       const wallet = await getAgentWallet(runtime);
 
       if (!wallet) {
-        const msg = `Payment required! Please send 5 USDC to: ${paymentAddress}`;
-        logger.warn(msg);
+        await sendCallback(
+          callback,
+          4,
+          6,
+          "payment",
+          "Manual payment required",
+          "waiting",
+          { paymentAddress, instruction: "Send 5 USDC to " + paymentAddress },
+        );
+
         return {
           success: false,
           stage: "awaiting_payment",
           paymentAddress,
-          message: msg,
+          message: "Please send 5 USDC to: " + paymentAddress,
         };
       }
 
-      logger.info("AgentMBox: Attempting to pay for subscription...");
-
+      // Auto-pay with wallet
       try {
         const { Connection, Keypair, PublicKey } =
           await import("@solana/web3.js");
@@ -348,33 +501,66 @@ export const onboardingAction: Action = {
           PAYMENT_AMOUNT,
         );
 
-        logger.info("AgentMBox: USDC transfer complete");
+        await sendCallback(
+          callback,
+          4,
+          6,
+          "payment",
+          "Payment sent",
+          "complete",
+        );
       } catch (transferError) {
         logger.error("USDC transfer failed:", transferError);
-        const msg = `Payment required! Please send 5 USDC to: ${paymentAddress}`;
+
+        await sendCallback(
+          callback,
+          4,
+          6,
+          "payment",
+          "Payment failed",
+          "error",
+          { errorMessage: "Transfer failed - manual payment needed" },
+        );
+
         return {
           success: false,
           stage: "awaiting_payment",
           paymentAddress,
-          message: msg,
+          message: "Payment failed. Please send 5 USDC to: " + paymentAddress,
         };
       }
 
-      // ========== Step 5: Confirm payment ==========
-      logger.info("AgentMBox: Checking payment...");
+      // ===== STEP 5: Confirm Payment =====
+      await sendCallback(
+        callback,
+        5,
+        6,
+        "confirmation",
+        "Confirming payment",
+        "starting",
+      );
+
       let paid = false;
       for (let i = 0; i < 12 && !paid; i++) {
         await new Promise((resolve) => setTimeout(resolve, 5000));
+
         try {
           const checkResponse = await fetch(`${BASE_URL}/payment/check`, {
             method: "POST",
             headers: { Authorization: `Bearer ${apiKey}` },
           });
-          const checkData = await checkResponse.json();
+          const checkData = (await checkResponse.json()) as { paid: boolean };
           paid = checkData.paid;
+
           if (paid) {
-            status = { stage: "paid", paymentAddress };
-            logger.info("AgentMBox: Payment confirmed");
+            await sendCallback(
+              callback,
+              5,
+              6,
+              "confirmation",
+              "Payment confirmed",
+              "complete",
+            );
           }
         } catch {
           // Continue polling
@@ -385,8 +571,16 @@ export const onboardingAction: Action = {
         throw new Error("Payment not confirmed after 60 seconds");
       }
 
-      // ========== Step 6: Create mailbox ==========
-      logger.info("AgentMBox: Creating mailbox...");
+      // ===== STEP 6: Create Mailbox =====
+      await sendCallback(
+        callback,
+        6,
+        6,
+        "mailbox",
+        "Creating mailbox",
+        "starting",
+      );
+
       const mailboxResponse = await fetch(`${BASE_URL}/mailboxes`, {
         method: "POST",
         headers: {
@@ -400,24 +594,20 @@ export const onboardingAction: Action = {
       });
 
       if (!mailboxResponse.ok) {
-        const error = await mailboxResponse.json();
+        const error = (await mailboxResponse.json()) as { error: string };
         throw new Error(`Mailbox creation failed: ${error.error}`);
       }
 
-      const mailboxData = await mailboxResponse.json();
-      mailboxAddress = mailboxData.mailbox.address;
-      status = {
-        stage: "complete",
-        mailbox: mailboxAddress,
+      const mailboxData = (await mailboxResponse.json()) as {
+        mailbox: { address: string };
       };
+      mailboxAddress = mailboxData.mailbox.address;
 
-      logger.info(`AgentMBox: Mailbox created: ${mailboxAddress}`);
+      // Save credentials
+      runtime.setSetting(SETTINGS.API_KEY, apiKey);
+      runtime.setSetting(SETTINGS.MAILBOX, mailboxAddress);
 
-      // Save final credentials to runtime settings (backward compat)
-      runtime.setSetting(SETTINGS.API_KEY, apiKey, true);
-      runtime.setSetting(SETTINGS.MAILBOX, mailboxAddress, true);
-
-      // Also save to database for persistence
+      // Save to database
       try {
         const db = (runtime as any).databaseAdapter?.db;
         if (db) {
@@ -429,7 +619,7 @@ export const onboardingAction: Action = {
               mailbox: mailboxAddress,
               solanaAddress: paymentAddress,
               isPaid: true,
-              paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+              paidUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
               ownerEmail,
               apiKeyCreatedAt: new Date(),
               apiKeyName: `${agentName}-key`,
@@ -446,81 +636,78 @@ export const onboardingAction: Action = {
                 updatedAt: new Date(),
               },
             });
-          logger.info("AgentMBox: Credentials saved to database");
         }
       } catch (dbError) {
-        logger.warn(
-          "AgentMBox: Failed to save credentials to database:",
-          dbError,
-        );
+        logger.warn("Failed to save credentials to database:", dbError);
       }
 
-      // Clear onboarding state since we're done
       clearOnboardingState(runtime);
 
-      if (callback) {
-        await callback({
-          text: `Onboarding complete! Mailbox: ${mailboxAddress}`,
-          values: {
-            success: true,
-            mailbox: mailboxAddress,
-          },
-        });
-      }
+      await sendCallback(
+        callback,
+        6,
+        6,
+        "mailbox",
+        "Mailbox created",
+        "complete",
+        { mailbox: mailboxAddress },
+      );
 
       return { success: true, mailbox: mailboxAddress };
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-      logger.error("AgentMBox onboarding failed: " + errorMessage);
-      status = { stage: "error", error: errorMessage };
+      logger.error("Onboarding failed:", errorMessage);
 
-      if (callback) {
-        await callback({
-          text: "Onboarding failed: " + errorMessage,
-          values: { success: false, error: errorMessage },
-        });
-      }
+      await sendCallback(
+        callback,
+        0,
+        6,
+        "error",
+        "Onboarding failed",
+        "error",
+        { errorMessage },
+      );
 
       return { success: false, error: errorMessage };
     }
   },
 
-  validate: async (_runtime: IAgentRuntime) => {
-    // Always valid - onboarding can be attempted
-    return true;
-  },
+  validate: async () => true,
 
   examples: [
     [
       {
         name: "user",
-        content: "Set up email for this agent",
+        content: { text: "Set up email for this agent" } as any,
       },
       {
         name: "assistant",
-        content:
-          "I'll set up AgentMBox email for you. This will create an account and pay 5 USDC from the agent's wallet.",
+        content: {
+          text: "I will set up AgentMBox email - this takes a few steps: account creation, API key, payment, and mailbox setup.",
+        } as any,
       },
     ],
     [
       {
         name: "user",
-        content: "I need to configure the email service",
+        content: { text: "Configure email service" } as any,
       },
       {
         name: "assistant",
-        content: "Starting the AgentMBox onboarding process now.",
+        content: { text: "Starting the onboarding workflow now." } as any,
       },
     ],
     [
       {
         name: "user",
-        content: "Can you set up a mailbox for receiving emails?",
+        content: { text: "Create an email mailbox" } as any,
       },
       {
         name: "assistant",
-        content: "On it! I'll create the mailbox and handle the payment.",
+        content: {
+          text: "I will create your mailbox and handle the 5 USDC payment.",
+        } as any,
       },
     ],
   ] as ActionExample[][],
